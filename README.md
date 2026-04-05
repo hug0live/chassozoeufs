@@ -27,13 +27,13 @@ docker compose up --build -d
 3. Depuis les telephones ou ordinateurs du meme reseau, ouvrir l'URL du serveur :
 
 ```text
-http://raspberrypi.local:8080
+http://raspberrypi.local:8181
 ```
 
 Ou, si `raspberrypi.local` n'est pas resolu :
 
 ```text
-http://IP_DU_RASPBERRY:8080
+http://IP_DU_RASPBERRY:8181
 ```
 
 ### Arreter
@@ -48,7 +48,7 @@ Cette URL ouvre directement l'application web de chasse aux oeufs. Aucun client 
 
 ## Variables Docker Compose
 
-- `HOST_PORT` : port expose sur le Raspberry, par defaut `8080`
+- `HOST_PORT` : port expose sur le Raspberry, par defaut `8181`
 - `ALLOWED_ORIGIN` : origine CORS autorisee, par defaut `*`
 
 ## API principale
@@ -68,7 +68,7 @@ Cette URL ouvre directement l'application web de chasse aux oeufs. Aucun client 
 ## Exemple de creation de partie
 
 ```bash
-curl -X POST http://raspberrypi.local:8080/api/games \
+curl -X POST http://raspberrypi.local:8181/api/games \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "Chasse du dimanche",

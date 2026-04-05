@@ -5,7 +5,7 @@ import 'package:egg_hunt_server/src/game_store.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 Future<void> main() async {
-  final port = int.tryParse(Platform.environment['APP_PORT'] ?? '8080') ?? 8080;
+  final port = int.tryParse(Platform.environment['APP_PORT'] ?? '8181') ?? 8181;
   final dataDir = Platform.environment['DATA_DIR'] ?? './data';
   final allowedOrigin = Platform.environment['ALLOWED_ORIGIN'] ?? '*';
   final publicDir = Platform.environment['PUBLIC_DIR'] ?? './public';

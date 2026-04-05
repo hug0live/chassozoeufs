@@ -26,10 +26,10 @@ RUN useradd --create-home --shell /usr/sbin/nologin appuser \
 
 USER appuser
 
-ENV APP_PORT=8080
+ENV APP_PORT=8181
 ENV DATA_DIR=/data
 ENV PUBLIC_DIR=/app/public
 
-EXPOSE 8080
+EXPOSE 8181
 
 CMD ["./server"]
