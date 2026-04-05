@@ -1,0 +1,16 @@
+name: egg_hunt_server
+description: Backend local pour la PWA Chasse aux oeufs.
+publish_to: none
+
+environment:
+  sdk: ^3.11.2
+
+dependencies:
+  path: ^1.9.1
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  shelf_web_socket: ^3.0.0
+  web_socket_channel: ^3.0.3
+
+dev_dependencies:
+  lints: ^6.0.0

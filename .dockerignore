@@ -1,0 +1,6 @@
+.git
+.dart_tool
+build
+.idea
+server/.dart_tool
+server/data

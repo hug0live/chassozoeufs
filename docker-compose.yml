@@ -1,0 +1,18 @@
+services:
+  egg-hunt-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: chassozoeufs-server
+    restart: unless-stopped
+    environment:
+      APP_PORT: 8080
+      DATA_DIR: /data
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-*}
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    volumes:
+      - egg_hunt_data:/data
+
+volumes:
+  egg_hunt_data:
