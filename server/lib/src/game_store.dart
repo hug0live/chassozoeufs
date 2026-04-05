@@ -73,23 +73,23 @@ class GameStore {
   Future<GameSession> createGame({
     required String title,
     required String hostName,
+    required String adminCode,
     required List<String> playerNames,
     required List<EggDraft> eggDrafts,
   }) async {
     final sanitizedPlayers = _sanitizePlayerNames(playerNames);
+    final normalizedAdminCode = adminCode.trim();
     if (sanitizedPlayers.isEmpty) {
       throw const GameStoreException('Ajoute au moins un joueur.');
+    }
+    if (!_isValidAdminCode(normalizedAdminCode)) {
+      throw const GameStoreException('Le code doit avoir 4 chiffres.');
     }
     if (eggDrafts.isEmpty) {
       throw const GameStoreException('Ajoute au moins un oeuf.');
     }
 
     final now = DateTime.now().toUtc();
-    for (final game in listGames()) {
-      if (game.isActive) {
-        _games[game.id] = game.copyWith(status: 'closed', updatedAt: now);
-      }
-    }
 
     final players = <PlayerEntry>[];
     for (var index = 0; index < sanitizedPlayers.length; index++) {
@@ -104,26 +104,46 @@ class GameStore {
     };
     final orderByPlayer = <String, int>{};
     final eggs = <EggEntry>[];
+    final customHideSpots = <HideSpotDefinition>[];
     for (var index = 0; index < eggDrafts.length; index++) {
       final draft = eggDrafts[index];
-      if (!kHideSpotById.containsKey(draft.hideSpotId)) {
-        throw GameStoreException(
-          'La cachette ${draft.hideSpotId} n\'existe pas dans le catalogue.',
-        );
-      }
       final playerId = playerIdsByName[draft.playerName];
       if (playerId == null) {
         throw GameStoreException(
           'Le joueur ${draft.playerName} n\'existe pas dans la partie.',
         );
       }
+      late final String hideSpotId;
+      final manualHideSpot = draft.manualHideSpot;
+      if (manualHideSpot != null) {
+        final customSpot = manualHideSpot.toHideSpot(
+          'custom-${index + 1}-${_slug(manualHideSpot.area)}-${Random().nextInt(99999)}',
+        );
+        if (customSpot.area.isEmpty ||
+            customSpot.objectLabel.isEmpty ||
+            customSpot.riddle.isEmpty ||
+            customSpot.hint.isEmpty) {
+          throw GameStoreException(
+            'Complete la cachette perso de l\'oeuf ${index + 1}.',
+          );
+        }
+        hideSpotId = customSpot.id;
+        customHideSpots.add(customSpot);
+      } else {
+        hideSpotId = draft.hideSpotId?.trim() ?? '';
+        if (!kHideSpotById.containsKey(hideSpotId)) {
+          throw GameStoreException(
+            'La cachette ${draft.hideSpotId} n\'existe pas dans le catalogue.',
+          );
+        }
+      }
       final order = (orderByPlayer[playerId] ?? 0) + 1;
       orderByPlayer[playerId] = order;
       eggs.add(
         EggEntry(
-          id: 'egg-${index + 1}-${draft.hideSpotId}',
+          id: 'egg-${index + 1}-${hideSpotId}',
           playerId: playerId,
-          hideSpotId: draft.hideSpotId,
+          hideSpotId: hideSpotId,
           order: order,
         ),
       );
@@ -133,8 +153,10 @@ class GameStore {
       id: 'hunt-${now.millisecondsSinceEpoch}-${Random().nextInt(99999)}',
       title: title.trim().isEmpty ? 'Chasse de Paques' : title.trim(),
       hostName: hostName.trim().isEmpty ? 'Raspberry Pi' : hostName.trim(),
+      adminCode: normalizedAdminCode,
       players: players,
       eggs: eggs,
+      customHideSpots: customHideSpots,
       createdAt: now,
       updatedAt: now,
       status: 'active',
@@ -261,8 +283,14 @@ class GameStore {
     );
   }
 
-  Future<GameSession> closeGame(String gameId) async {
+  Future<GameSession> closeGame({
+    required String gameId,
+    required String adminCode,
+  }) async {
     final game = _requireGame(gameId);
+    if (game.adminCode.isNotEmpty && game.adminCode != adminCode.trim()) {
+      throw const GameStoreException('Code incorrect.');
+    }
     return _saveGame(
       game.copyWith(status: 'closed', updatedAt: DateTime.now().toUtc()),
     );
@@ -286,7 +314,9 @@ class GameStore {
   Future<void> _persist() async {
     final file = File(_stateFilePath);
     final payload = jsonEncode({
-      'games': [for (final game in listGames()) game.toJson()],
+      'games': [
+        for (final game in listGames()) game.toJson(includeAdminCode: true),
+      ],
     });
     await file.writeAsString(payload);
   }
@@ -308,6 +338,10 @@ class GameStore {
   }
 
   String get _stateFilePath => path.join(dataDirectory, 'state.json');
+
+  static bool _isValidAdminCode(String value) {
+    return RegExp(r'^\d{4}$').hasMatch(value);
+  }
 
   static String _slug(String value) {
     return value

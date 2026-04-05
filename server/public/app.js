@@ -1,6 +1,6 @@
 const STORAGE_KEYS = {
   deviceLabel: 'egg-hunt.device-label',
-  hostGameId: 'egg-hunt.host-game-id',
+  hostGameIds: 'egg-hunt.host-game-ids',
   playerClaims: 'egg-hunt.player-claims',
 };
 
@@ -10,7 +10,9 @@ const state = {
   hideSpots: [],
   hideSpotMap: new Map(),
   groupedHideSpots: new Map(),
+  games: [],
   game: null,
+  selectedGameId: '',
   socket: null,
   socketGameId: null,
   socketStatus: 'idle',
@@ -20,12 +22,10 @@ const state = {
   trackedEggId: null,
   hintStartedAt: null,
   deviceLabel: loadDeviceLabel(),
-  hostGameId: localStorage.getItem(STORAGE_KEYS.hostGameId) || '',
+  hostGameIds: loadHostGameIds(),
   playerClaims: loadPlayerClaims(),
   create: null,
 };
-
-state.create = createDefaultDraft();
 
 boot().catch((error) => {
   console.error(error);
@@ -43,7 +43,13 @@ appEl.addEventListener('click', (event) => {
 
 appEl.addEventListener('change', (event) => {
   const target = event.target;
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) {
+  if (
+    !(
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement
+    )
+  ) {
     return;
   }
   handleFieldChange(target);
@@ -59,14 +65,21 @@ setInterval(() => {
 
 async function boot() {
   await loadCatalog();
-  await refreshActiveGame();
+  state.create = createDefaultDraft();
+  await refreshGames();
   render();
 }
 
 async function handleAction(action, target) {
   switch (action) {
     case 'refresh':
-      await refreshActiveGame();
+      await refreshGames();
+      break;
+    case 'go-lobby':
+      goLobby();
+      break;
+    case 'select-game':
+      selectGame(target.dataset.gameId || '');
       break;
     case 'add-player':
       addPlayer();
@@ -82,6 +95,9 @@ async function handleAction(action, target) {
       break;
     case 'create-game':
       await createGame();
+      break;
+    case 'delete-game':
+      await deleteGame(target.dataset.gameId || '');
       break;
     case 'claim-player':
       await claimPlayer(target.dataset.playerId || '');
@@ -108,6 +124,10 @@ function handleFieldChange(target) {
     return;
   }
 
+  if (!state.create) {
+    return;
+  }
+
   if (target.id === 'game-title') {
     state.create.title = target.value;
     return;
@@ -115,6 +135,12 @@ function handleFieldChange(target) {
 
   if (target.id === 'host-name') {
     state.create.hostName = target.value;
+    return;
+  }
+
+  if (target.id === 'game-code') {
+    state.create.adminCode = normalizeAdminCode(target.value);
+    render();
     return;
   }
 
@@ -130,19 +156,59 @@ function handleFieldChange(target) {
 
   if (target.dataset.field === 'player') {
     draft.playerName = target.value;
+    render();
+    return;
+  }
+
+  if (target.dataset.field === 'mode') {
+    draft.mode = target.value === 'custom' ? 'custom' : 'catalog';
+    if (draft.mode === 'catalog' && !draft.hideSpotId) {
+      const options = hideSpotsForArea(draft.area);
+      draft.hideSpotId = options[0]?.id || '';
+    }
+    if (draft.mode === 'custom' && !draft.customArea.trim()) {
+      draft.customArea = draft.area;
+    }
+    render();
+    return;
   }
 
   if (target.dataset.field === 'area') {
     draft.area = target.value;
     const options = hideSpotsForArea(draft.area);
     draft.hideSpotId = options[0]?.id || '';
+    render();
+    return;
   }
 
   if (target.dataset.field === 'hideSpotId') {
     draft.hideSpotId = target.value;
+    render();
+    return;
   }
 
-  render();
+  if (target.dataset.field === 'customArea') {
+    draft.customArea = target.value;
+    render();
+    return;
+  }
+
+  if (target.dataset.field === 'customObjectLabel') {
+    draft.customObjectLabel = target.value;
+    render();
+    return;
+  }
+
+  if (target.dataset.field === 'customRiddle') {
+    draft.customRiddle = target.value;
+    render();
+    return;
+  }
+
+  if (target.dataset.field === 'customHint') {
+    draft.customHint = target.value;
+    render();
+  }
 }
 
 async function loadCatalog() {
@@ -157,11 +223,18 @@ async function loadCatalog() {
   }
 }
 
-async function refreshActiveGame() {
+async function refreshGames() {
   setLoading(true);
   try {
-    const payload = await requestJson('/api/games/active');
-    applyGameSnapshot(payload.game || null);
+    const payload = await requestJson('/api/games');
+    state.games = (payload.games || [])
+      .filter((game) => game.status === 'active')
+      .sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+
+    pruneLocalSelections();
+
+    const selectedGame = state.games.find((game) => game.id === state.selectedGameId) || null;
+    applySelectedGame(selectedGame);
     clearNotice('error');
   } catch (error) {
     showNotice(error.message || String(error), 'error');
@@ -170,16 +243,34 @@ async function refreshActiveGame() {
   }
 }
 
-function applyGameSnapshot(game) {
-  const previousGameId = state.game?.id || '';
-  state.game = game && game.status === 'active' ? game : null;
+function pruneLocalSelections() {
+  const activeIds = new Set(state.games.map((game) => game.id));
 
-  if (!state.game) {
-    if (previousGameId) {
-      clearSessionForGame(previousGameId);
+  state.hostGameIds = state.hostGameIds.filter((gameId) => activeIds.has(gameId));
+  saveHostGameIds();
+
+  let claimsChanged = false;
+  for (const [gameId, playerId] of Object.entries(state.playerClaims)) {
+    const game = state.games.find((item) => item.id === gameId);
+    const player = game?.players.find((item) => item.id === playerId);
+    if (!player || player.claimedBy !== state.deviceLabel) {
+      delete state.playerClaims[gameId];
+      claimsChanged = true;
     }
-    state.hostGameId = '';
-    localStorage.removeItem(STORAGE_KEYS.hostGameId);
+  }
+  if (claimsChanged) {
+    savePlayerClaims();
+  }
+
+  if (state.selectedGameId && !activeIds.has(state.selectedGameId)) {
+    clearSelectedGame();
+  }
+}
+
+function applySelectedGame(game) {
+  state.game = game;
+
+  if (!game) {
     state.trackedEggId = null;
     state.hintStartedAt = null;
     disconnectSocket();
@@ -187,37 +278,27 @@ function applyGameSnapshot(game) {
     return;
   }
 
-  if (state.hostGameId && state.hostGameId !== state.game.id) {
-    localStorage.removeItem(STORAGE_KEYS.hostGameId);
-    state.hostGameId = '';
-  }
-
-  const claimedPlayerId = getClaimedPlayerId(state.game.id);
+  const claimedPlayerId = getClaimedPlayerId(game.id);
   if (claimedPlayerId) {
-    const player = state.game.players.find((item) => item.id === claimedPlayerId);
+    const player = game.players.find((item) => item.id === claimedPlayerId);
     if (!player || player.claimedBy !== state.deviceLabel) {
-      setClaimedPlayerId(state.game.id, null);
+      setClaimedPlayerId(game.id, null);
     }
   }
 
   syncHintTimer();
-  connectSocket(state.game.id);
+  connectSocket(game.id);
   render();
 }
 
 function createDefaultDraft() {
-  const areas = [...state.groupedHideSpots.keys()];
-  const firstArea = areas[0] || '';
-  const firstSpot = hideSpotsForArea(firstArea)[0];
   return {
-    title: 'Chasse du dimanche',
-    hostName: 'Maitre du jeu',
+    title: 'Grande chasse',
+    hostName: 'Grand lapin',
+    adminCode: '',
     players: [],
     eggs: [],
     nextEggId: 1,
-    playerInput: '',
-    area: firstArea,
-    hideSpotId: firstSpot?.id || '',
   };
 }
 
@@ -225,7 +306,27 @@ function resetCreateDraft() {
   state.create = createDefaultDraft();
 }
 
+function createEggDraft(id, playerName = '') {
+  const areas = [...state.groupedHideSpots.keys()];
+  const area = areas[0] || '';
+  const firstSpot = hideSpotsForArea(area)[0];
+  return {
+    id,
+    playerName,
+    mode: 'catalog',
+    area,
+    hideSpotId: firstSpot?.id || '',
+    customArea: area,
+    customObjectLabel: '',
+    customRiddle: '',
+    customHint: '',
+  };
+}
+
 function addPlayer() {
+  if (!state.create) {
+    return;
+  }
   const input = document.querySelector('#new-player');
   if (!(input instanceof HTMLInputElement)) {
     return;
@@ -247,6 +348,9 @@ function addPlayer() {
 }
 
 function removePlayer(playerName) {
+  if (!state.create) {
+    return;
+  }
   state.create.players = state.create.players.filter((name) => name !== playerName);
   state.create.eggs = state.create.eggs.filter((egg) => egg.playerName !== playerName);
   if (state.create.players.length > 0) {
@@ -260,31 +364,82 @@ function removePlayer(playerName) {
 }
 
 function addEggDraft(shouldRender = true) {
-  if (state.create.players.length === 0) {
+  if (!state.create || state.create.players.length === 0) {
     return;
   }
-  const areas = [...state.groupedHideSpots.keys()];
-  const area = areas[0] || '';
-  const firstSpot = hideSpotsForArea(area)[0];
-  state.create.eggs.push({
-    id: state.create.nextEggId++,
-    playerName: state.create.players[0],
-    area,
-    hideSpotId: firstSpot?.id || '',
-  });
+  state.create.eggs.push(
+    createEggDraft(state.create.nextEggId++, state.create.players[0]),
+  );
   if (shouldRender) {
     render();
   }
 }
 
 function removeEggDraft(eggId) {
+  if (!state.create) {
+    return;
+  }
   state.create.eggs = state.create.eggs.filter((egg) => egg.id !== eggId);
   render();
 }
 
+function allEggDraftsReady() {
+  return Boolean(
+    state.create &&
+      isAdminCodeReady(state.create.adminCode) &&
+      state.create.eggs.length &&
+      state.create.eggs.every(isEggDraftReady),
+  );
+}
+
+function isAdminCodeReady(value) {
+  return /^\d{4}$/.test(value || '');
+}
+
+function normalizeAdminCode(value) {
+  return String(value ?? '')
+    .replaceAll(/\D/g, '')
+    .slice(0, 4);
+}
+
+function isEggDraftReady(draft) {
+  if (!draft.playerName) {
+    return false;
+  }
+  if (draft.mode === 'custom') {
+    return [
+      draft.customArea,
+      draft.customObjectLabel,
+      draft.customRiddle,
+      draft.customHint,
+    ].every((value) => value.trim());
+  }
+  return Boolean(draft.hideSpotId);
+}
+
+function previewHideSpotForDraft(draft) {
+  if (draft.mode === 'custom') {
+    return {
+      area: draft.customArea.trim(),
+      objectLabel: draft.customObjectLabel.trim(),
+      riddle: draft.customRiddle.trim(),
+      hint: draft.customHint.trim(),
+    };
+  }
+  return hideSpotById(draft.hideSpotId);
+}
+
 async function createGame() {
-  if (state.create.players.length === 0 || state.create.eggs.length === 0) {
+  if (!state.create || state.create.players.length === 0 || state.create.eggs.length === 0) {
     showNotice('Ajoute au moins un joueur et un oeuf.', 'error');
+    return;
+  }
+  if (!isAdminCodeReady(state.create.adminCode)) {
+    showNotice('Ajoute un code a 4 chiffres.', 'error');
+    return;
+  }
+  if (!allEggDraftsReady()) {
+    showNotice('Complete chaque cachette.', 'error');
     return;
   }
 
@@ -295,18 +450,34 @@ async function createGame() {
       body: JSON.stringify({
         title: state.create.title.trim(),
         hostName: state.create.hostName.trim(),
+        adminCode: state.create.adminCode,
         players: state.create.players,
-        eggs: state.create.eggs.map((egg) => ({
-          playerName: egg.playerName,
-          hideSpotId: egg.hideSpotId,
-        })),
+        eggs: state.create.eggs.map((egg) => {
+          if (egg.mode === 'custom') {
+            return {
+              playerName: egg.playerName,
+              customHideSpot: {
+                area: egg.customArea.trim(),
+                objectLabel: egg.customObjectLabel.trim(),
+                riddle: egg.customRiddle.trim(),
+                hint: egg.customHint.trim(),
+              },
+            };
+          }
+          return {
+            playerName: egg.playerName,
+            hideSpotId: egg.hideSpotId,
+          };
+        }),
       }),
     });
-    state.hostGameId = payload.game.id;
-    localStorage.setItem(STORAGE_KEYS.hostGameId, state.hostGameId);
+
+    addHostGameId(payload.game.id);
+    setSelectedGameId(payload.game.id);
+    upsertGame(payload.game);
     resetCreateDraft();
-    applyGameSnapshot(payload.game);
-    showNotice('La partie est ouverte. Les autres appareils peuvent rejoindre la meme URL.', 'info');
+    applySelectedGame(payload.game);
+    showNotice('Nouvelle partie ouverte !', 'info');
   } catch (error) {
     showNotice(error.message || String(error), 'error');
   } finally {
@@ -314,10 +485,57 @@ async function createGame() {
   }
 }
 
+async function deleteGame(gameId) {
+  const game = state.games.find((item) => item.id === gameId) || state.game;
+  if (!game) {
+    return;
+  }
+  const adminCode = promptForAdminCode(game.title);
+  if (adminCode == null) {
+    return;
+  }
+
+  setLoading(true);
+  try {
+    await requestJson(`/api/games/${gameId}/close`, {
+      method: 'POST',
+      body: JSON.stringify({ adminCode }),
+    });
+    removeHostGameId(gameId);
+    clearSessionForGame(gameId);
+    if (state.selectedGameId === gameId) {
+      goLobby(false);
+    }
+    await refreshGames();
+    showNotice('Partie supprimee.', 'info');
+  } catch (error) {
+    showNotice(error.message || String(error), 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+function promptForAdminCode(gameTitle) {
+  const value = window.prompt(
+    `Code de "${gameTitle}"`,
+    '',
+  );
+  if (value == null) {
+    return null;
+  }
+  const normalized = normalizeAdminCode(value);
+  if (!isAdminCodeReady(normalized)) {
+    showNotice('Entre 4 chiffres.', 'error');
+    return null;
+  }
+  return normalized;
+}
+
 async function claimPlayer(playerId) {
   if (!state.game) {
     return;
   }
+
   setLoading(true);
   try {
     const payload = await requestJson(`/api/games/${state.game.id}/join`, {
@@ -328,8 +546,9 @@ async function claimPlayer(playerId) {
       }),
     });
     setClaimedPlayerId(state.game.id, playerId);
-    applyGameSnapshot(payload.game);
-    showNotice('Le joueur est reserve sur cet appareil.', 'info');
+    upsertGame(payload.game);
+    applySelectedGame(payload.game);
+    showNotice("C'est parti !", 'info');
   } catch (error) {
     showNotice(error.message || String(error), 'error');
   } finally {
@@ -343,6 +562,7 @@ async function leaveCurrentPlayer() {
   if (!game || !playerId) {
     return;
   }
+
   setLoading(true);
   try {
     const payload = await requestJson(`/api/games/${game.id}/leave`, {
@@ -355,7 +575,8 @@ async function leaveCurrentPlayer() {
     setClaimedPlayerId(game.id, null);
     state.trackedEggId = null;
     state.hintStartedAt = null;
-    applyGameSnapshot(payload.game);
+    upsertGame(payload.game);
+    applySelectedGame(payload.game);
   } catch (error) {
     showNotice(error.message || String(error), 'error');
   } finally {
@@ -370,16 +591,15 @@ async function markCurrentEggFound() {
   if (!game || !playerId || !egg) {
     return;
   }
+
   setLoading(true);
   try {
-    const payload = await requestJson(
-      `/api/games/${game.id}/eggs/${egg.id}/found`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ playerId }),
-      },
-    );
-    applyGameSnapshot(payload.game);
+    const payload = await requestJson(`/api/games/${game.id}/eggs/${egg.id}/found`, {
+      method: 'POST',
+      body: JSON.stringify({ playerId }),
+    });
+    upsertGame(payload.game);
+    applySelectedGame(payload.game);
   } catch (error) {
     showNotice(error.message || String(error), 'error');
   } finally {
@@ -391,23 +611,26 @@ async function closeCurrentGame() {
   if (!state.game) {
     return;
   }
-  if (!window.confirm('Clore la partie en cours ?')) {
+  await deleteGame(state.game.id);
+}
+
+function selectGame(gameId) {
+  const game = state.games.find((item) => item.id === gameId);
+  if (!game) {
     return;
   }
-  setLoading(true);
-  try {
-    await requestJson(`/api/games/${state.game.id}/close`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
-    clearSessionForGame(state.game.id);
-    state.hostGameId = '';
-    localStorage.removeItem(STORAGE_KEYS.hostGameId);
-    disconnectSocket();
-    await refreshActiveGame();
-  } catch (error) {
-    showNotice(error.message || String(error), 'error');
-    setLoading(false);
+  setSelectedGameId(gameId);
+  applySelectedGame(game);
+}
+
+function goLobby(shouldRender = true) {
+  clearSelectedGame();
+  state.game = null;
+  state.trackedEggId = null;
+  state.hintStartedAt = null;
+  disconnectSocket();
+  if (shouldRender) {
+    render();
   }
 }
 
@@ -435,7 +658,7 @@ function connectSocket(gameId) {
     try {
       const payload = JSON.parse(event.data);
       if (payload.type === 'snapshot') {
-        applyGameSnapshot(payload.game || null);
+        mergeGameSnapshot(payload.game || null);
       }
     } catch (error) {
       console.error(error);
@@ -484,11 +707,43 @@ function scheduleReconnect(gameId) {
   }, 2500);
 }
 
-function currentView() {
-  if (!state.game) {
-    return 'create';
+function mergeGameSnapshot(game) {
+  if (!game || game.status !== 'active') {
+    if (game?.id) {
+      state.games = state.games.filter((item) => item.id !== game.id);
+      removeHostGameId(game.id);
+      clearSessionForGame(game.id);
+      if (state.selectedGameId === game.id) {
+        goLobby(false);
+      }
+    }
+    render();
+    return;
   }
-  if (state.hostGameId === state.game.id) {
+
+  upsertGame(game);
+  if (state.selectedGameId === game.id) {
+    applySelectedGame(game);
+  } else {
+    render();
+  }
+}
+
+function upsertGame(game) {
+  const index = state.games.findIndex((item) => item.id === game.id);
+  if (index === -1) {
+    state.games.push(game);
+  } else {
+    state.games[index] = game;
+  }
+  state.games.sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+}
+
+function currentView() {
+  if (!state.selectedGameId || !state.game) {
+    return state.games.length > 0 ? 'lobby' : 'create';
+  }
+  if (isHostGame(state.game.id)) {
     return 'host';
   }
   if (getClaimedPlayerId(state.game.id)) {
@@ -510,8 +765,7 @@ function currentEgg() {
   if (!state.game || !player) {
     return null;
   }
-  const eggs = eggsForPlayer(player.id);
-  return eggs.find((egg) => !egg.foundAt) || null;
+  return eggsForPlayer(player.id).find((egg) => !egg.foundAt) || null;
 }
 
 function eggsForPlayer(playerId) {
@@ -548,13 +802,10 @@ function updateHuntTimer() {
   }
 
   const unlocked = isHintUnlocked();
-  timerEl.textContent = unlocked
-    ? "L'indice est maintenant disponible."
-    : `Indice dans ${remainingHintLabel()}.`;
-
+  timerEl.textContent = unlocked ? 'Indice pret' : `Indice ${remainingHintLabel()}`;
   hintEl.innerHTML = unlocked
     ? `<strong>Indice :</strong> ${escapeHtml(hideSpotById(egg.hideSpotId)?.hint || '')}`
-    : "Tiens bon encore un peu : l'indice s'affichera automatiquement apres 5 minutes.";
+    : "Encore un petit peu...";
   hintEl.className = unlocked ? 'hint' : 'hint hint--locked';
 }
 
@@ -570,41 +821,56 @@ function render() {
 }
 
 function renderHero() {
-  const activeLabel = state.game
+  const activeLabel = state.selectedGameId && state.game
     ? `${state.game.title} · ${currentViewLabel()}`
-    : 'Aucune partie active';
+    : state.games.length > 0
+      ? `${state.games.length} partie(s)`
+      : 'Pret a jouer';
   const deviceLocked = Boolean(
     state.game &&
-      (state.hostGameId === state.game.id || getClaimedPlayerId(state.game.id)),
+      (isHostGame(state.game.id) || getClaimedPlayerId(state.game.id)),
   );
+
   return `
     <section class="hero">
       <div class="hero__top">
-        <span class="pill">Une seule URL pour tous les joueurs</span>
+        <span class="pill">Paques</span>
         <span class="pill">${escapeHtml(activeLabel)}</span>
         <span class="pill">${escapeHtml(socketLabel())}</span>
       </div>
-      <div class="hero__body">
-        <div>
-          <h1>Chasse aux oeufs monolithique</h1>
-          <p>
-            Le Raspberry heberge directement l'application complete : interface web,
-            API et synchronisation temps reel. Chaque appareil ouvre la meme adresse.
-          </p>
-        </div>
-        <div class="hero__controls">
-          <div class="field">
-            <label for="device-label">Nom de cet appareil</label>
-            <input
-              id="device-label"
-              value="${escapeHtml(state.deviceLabel)}"
-              ${deviceLocked ? 'disabled' : ''}
-            />
+      <div class="hero__layout">
+        <div class="hero__content">
+          <div>
+            <h1>La chasse aux oeufs</h1>
+            <p>Choisis une partie, ou cree la tienne.</p>
           </div>
-          <div class="footer-note">
-            ${deviceLocked
-              ? "Le nom de l'appareil reste fige pendant la partie pour eviter les conflits de reservation."
-              : "Choisis un nom simple. Il sera utilise pour reserver un joueur dans la partie."}
+          <div class="hero__controls">
+            <div class="field">
+              <label for="device-label">Nom de cet appareil</label>
+              <input
+                id="device-label"
+                value="${escapeHtml(state.deviceLabel)}"
+                ${deviceLocked ? 'disabled' : ''}
+              />
+            </div>
+            <div class="footer-note">
+              ${deviceLocked ? 'Nom fige pour cette partie.' : 'Choisis un petit nom simple.'}
+            </div>
+          </div>
+        </div>
+        <div class="hero__scene" aria-hidden="true">
+          <div class="cloud cloud--a"></div>
+          <div class="cloud cloud--b"></div>
+          <div class="egg egg--a"></div>
+          <div class="egg egg--b"></div>
+          <div class="egg egg--c"></div>
+          <div class="bunny">
+            <span class="bunny__ear bunny__ear--left"></span>
+            <span class="bunny__ear bunny__ear--right"></span>
+          </div>
+          <div class="grass"></div>
+          <div class="flowers">
+            <span></span><span></span><span></span><span></span>
           </div>
         </div>
       </div>
@@ -628,114 +894,184 @@ function renderBody() {
       return renderPickerView();
     case 'hunt':
       return renderHuntView();
+    case 'lobby':
+      return renderLobbyView();
     default:
-      return renderCreateView();
+      return renderCreateOnlyView();
   }
 }
 
-function renderCreateView() {
+function renderLobbyView() {
   return `
     <section class="grid grid--two">
       <article class="card">
         <div class="card__header">
           <div>
-            <h2 class="card__title">Nouvelle partie</h2>
-            <p class="card__subtitle">
-              Le maitre du jeu prepare la liste des joueurs, puis configure les cachettes.
-              Tous les autres appareils rejoindront ensuite la meme URL.
-            </p>
+            <h2 class="card__title">Parties ouvertes</h2>
+            <p class="card__subtitle">Rejoins-en une, ou cree une nouvelle.</p>
           </div>
           <button class="button button--secondary" data-action="refresh" ${disabledAttr()}>
             Actualiser
           </button>
         </div>
-        <div class="grid">
-          <div class="field">
-            <label for="game-title">Nom de la partie</label>
-            <input id="game-title" value="${escapeHtml(state.create.title)}" />
-          </div>
-          <div class="field">
-            <label for="host-name">Nom du maitre du jeu</label>
-            <input id="host-name" value="${escapeHtml(state.create.hostName)}" />
-          </div>
-        </div>
-        <div class="card__header" style="margin-top: 22px;">
-          <div>
-            <h3 class="card__title">Joueurs</h3>
-            <p class="card__subtitle">
-              Ajoute les enfants ou joueurs qui auront chacun leurs enigmes.
-            </p>
-          </div>
-        </div>
-        <div class="row">
-          <div class="field grow">
-            <label for="new-player">Ajouter un joueur</label>
-            <input id="new-player" placeholder="Ex. Zoe" />
-          </div>
-          <button class="button button--primary" data-action="add-player">Ajouter</button>
-        </div>
-        <div class="chip-list" style="margin-top: 14px;">
-          ${state.create.players.length
-            ? state.create.players
-                .map(
-                  (player) => `
-                    <span class="chip">
-                      ${escapeHtml(player)}
-                      <button data-action="remove-player" data-player-name="${escapeHtml(player)}">
-                        retirer
-                      </button>
-                    </span>
-                  `,
-                )
-                .join('')
-            : '<div class="empty">Aucun joueur ajoute pour le moment.</div>'}
+        <div class="tile-list">
+          ${state.games.map(renderGameLobbyTile).join('')}
         </div>
       </article>
-      <article class="card card--soft">
-        <div class="card__header">
-          <div>
-            <h2 class="card__title">Oeufs et cachettes</h2>
-            <p class="card__subtitle">
-              Chaque oeuf est lie a un joueur et a une enigme difficile predefinie.
-            </p>
-          </div>
-          <button
-            class="button button--secondary"
-            data-action="add-egg"
-            ${state.create.players.length ? '' : 'disabled'}
-          >
-            Ajouter un oeuf
-          </button>
+      ${renderCreatePanel()}
+    </section>
+  `;
+}
+
+function renderCreateOnlyView() {
+  return renderCreatePanel();
+}
+
+function renderCreatePanel() {
+  if (!state.create) {
+    return '';
+  }
+
+  return `
+    <article class="card card--soft">
+      <div class="card__header">
+        <div>
+          <h2 class="card__title">${state.games.length > 0 ? 'Nouvelle partie' : '1. Nouvelle partie'}</h2>
+          <p class="card__subtitle">${state.games.length > 0 ? 'Tu peux en ouvrir une autre.' : 'Commence ici.'}</p>
         </div>
-        ${
-          state.create.eggs.length
-            ? `<div class="draft-list">${state.create.eggs.map(renderEggDraft).join('')}</div>`
-            : '<div class="empty">Ajoute d abord au moins un joueur puis configure une premiere cachette.</div>'
-        }
-        <div class="row" style="margin-top: 18px;">
+        ${state.games.length > 0 ? '<button class="button button--ghost" data-action="refresh">Voir les parties</button>' : ''}
+      </div>
+      <div class="grid">
+        <div class="field">
+          <label for="game-title">Nom de la partie</label>
+          <input id="game-title" value="${escapeHtml(state.create.title)}" />
+        </div>
+        <div class="field">
+          <label for="host-name">Qui cache ?</label>
+          <input id="host-name" value="${escapeHtml(state.create.hostName)}" />
+        </div>
+        <div class="field">
+          <label for="game-code">Code secret</label>
+          <input
+            id="game-code"
+            type="password"
+            inputmode="numeric"
+            maxlength="4"
+            placeholder="0000"
+            value="${escapeHtml(state.create.adminCode)}"
+          />
+        </div>
+      </div>
+      <div class="card__header" style="margin-top: 22px;">
+        <div>
+          <h3 class="card__title">Joueurs</h3>
+          <p class="card__subtitle">Un nom par chasseur.</p>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field grow">
+          <label for="new-player">Ajouter un joueur</label>
+          <input id="new-player" placeholder="Ex. Zoe" />
+        </div>
+        <button class="button button--primary" data-action="add-player">Ajouter</button>
+      </div>
+      <div class="chip-list" style="margin-top: 14px;">
+        ${state.create.players.length
+          ? state.create.players.map((player) => `
+              <span class="chip">
+                ${escapeHtml(player)}
+                <button data-action="remove-player" data-player-name="${escapeHtml(player)}">
+                  retirer
+                </button>
+              </span>
+            `).join('')
+          : '<div class="empty">Ajoute les enfants.</div>'}
+      </div>
+      <div class="card__header" style="margin-top: 22px;">
+        <div>
+          <h3 class="card__title">Oeufs</h3>
+          <p class="card__subtitle">Choisis les cachettes.</p>
+        </div>
+        <button
+          class="button button--secondary"
+          data-action="add-egg"
+          ${state.create.players.length ? '' : 'disabled'}
+        >
+          Ajouter un oeuf
+        </button>
+      </div>
+      ${
+        state.create.eggs.length
+          ? `<div class="draft-list">${state.create.eggs.map(renderEggDraft).join('')}</div>`
+          : '<div class="empty">Ajoute un joueur, puis un oeuf.</div>'
+      }
+      <div class="row" style="margin-top: 18px;">
+        <button
+          class="button button--primary"
+          data-action="create-game"
+          ${state.create.players.length && state.create.eggs.length && allEggDraftsReady() ? '' : 'disabled'}
+        >
+          Ouvrir la partie
+        </button>
+      </div>
+    </article>
+  `;
+}
+
+function renderGameLobbyTile(game) {
+  const claimedPlayerId = getClaimedPlayerId(game.id);
+  const claimedPlayer = claimedPlayerId
+    ? game.players.find((player) => player.id === claimedPlayerId)
+    : null;
+  const label = isHostGame(game.id)
+    ? 'Ouvrir'
+    : claimedPlayer
+      ? 'Continuer'
+      : 'Rejoindre';
+
+  return `
+    <article class="tile tile--pending">
+      <div>
+        <h3 class="tile__title">${escapeHtml(game.title)}</h3>
+        <div class="tile__meta">
+          ${escapeHtml(game.hostName)} · ${game.players.length} joueur(s) · ${game.eggs.length} oeuf(s)
+          ${claimedPlayer ? `<br />Tu joues : ${escapeHtml(claimedPlayer.name)}` : ''}
+        </div>
+      </div>
+      <div class="tile__aside">
+        <div class="tile__actions">
           <button
             class="button button--primary"
-            data-action="create-game"
-            ${state.create.players.length && state.create.eggs.length ? '' : 'disabled'}
+            data-action="select-game"
+            data-game-id="${game.id}"
+            ${disabledAttr()}
           >
-            Ouvrir la partie
+            ${label}
+          </button>
+          <button
+            class="button button--danger"
+            data-action="delete-game"
+            data-game-id="${game.id}"
+            ${disabledAttr()}
+          >
+            Supprimer
           </button>
         </div>
-      </article>
-    </section>
+      </div>
+    </article>
   `;
 }
 
 function renderEggDraft(draft) {
   const areas = [...state.groupedHideSpots.keys()];
   const spots = hideSpotsForArea(draft.area);
-  const currentSpot = hideSpotById(draft.hideSpotId);
+  const currentSpot = previewHideSpotForDraft(draft);
   return `
     <article class="draft">
       <div class="draft__head">
         <div>
-          <strong>Oeuf a cacher</strong>
-          <div class="muted">Attribue un joueur et une cachette precise.</div>
+          <strong>Oeuf ${draft.id}</strong>
+          <div class="muted">Un joueur, une cachette.</div>
         </div>
         <button class="button button--ghost" data-action="remove-egg" data-egg-id="${draft.id}">
           Retirer
@@ -743,50 +1079,92 @@ function renderEggDraft(draft) {
       </div>
       <div class="grid">
         <div class="field">
-          <label>Pour quel joueur ?</label>
+          <label>Style</label>
+          <select data-egg-id="${draft.id}" data-field="mode">
+            <option value="catalog" ${draft.mode === 'catalog' ? 'selected' : ''}>Catalogue</option>
+            <option value="custom" ${draft.mode === 'custom' ? 'selected' : ''}>Perso</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Joueur</label>
           <select data-egg-id="${draft.id}" data-field="player">
-            ${state.create.players
-              .map(
-                (player) => `
-                  <option value="${escapeHtml(player)}" ${player === draft.playerName ? 'selected' : ''}>
-                    ${escapeHtml(player)}
-                  </option>
-                `,
-              )
-              .join('')}
-          </select>
-        </div>
-        <div class="field">
-          <label>Piece ou zone</label>
-          <select data-egg-id="${draft.id}" data-field="area">
-            ${areas
-              .map(
-                (area) => `
-                  <option value="${escapeHtml(area)}" ${area === draft.area ? 'selected' : ''}>
-                    ${escapeHtml(area)}
-                  </option>
-                `,
-              )
-              .join('')}
-          </select>
-        </div>
-        <div class="field">
-          <label>Objet ou cachette</label>
-          <select data-egg-id="${draft.id}" data-field="hideSpotId">
-            ${spots
-              .map(
-                (spot) => `
-                  <option value="${spot.id}" ${spot.id === draft.hideSpotId ? 'selected' : ''}>
-                    ${escapeHtml(spot.objectLabel)}
-                  </option>
-                `,
-              )
-              .join('')}
+            ${state.create.players.map((player) => `
+              <option value="${escapeHtml(player)}" ${player === draft.playerName ? 'selected' : ''}>
+                ${escapeHtml(player)}
+              </option>
+            `).join('')}
           </select>
         </div>
       </div>
-      <div class="muted"><strong>Enigme :</strong> ${escapeHtml(currentSpot?.riddle || '')}</div>
-      <div class="muted"><strong>Indice apres 5 minutes :</strong> ${escapeHtml(currentSpot?.hint || '')}</div>
+      ${
+        draft.mode === 'custom'
+          ? `
+              <div class="grid">
+                <div class="field">
+                  <label>Piece</label>
+                  <input
+                    data-egg-id="${draft.id}"
+                    data-field="customArea"
+                    value="${escapeHtml(draft.customArea)}"
+                    placeholder="Ex. Veranda"
+                  />
+                </div>
+                <div class="field">
+                  <label>Objet</label>
+                  <input
+                    data-egg-id="${draft.id}"
+                    data-field="customObjectLabel"
+                    value="${escapeHtml(draft.customObjectLabel)}"
+                    placeholder="Ex. sous le gros coussin"
+                  />
+                </div>
+                <div class="field">
+                  <label>Enigme</label>
+                  <textarea
+                    data-egg-id="${draft.id}"
+                    data-field="customRiddle"
+                    rows="4"
+                    placeholder="Ecris une enigme difficile"
+                  >${escapeHtml(draft.customRiddle)}</textarea>
+                </div>
+                <div class="field">
+                  <label>Indice</label>
+                  <textarea
+                    data-egg-id="${draft.id}"
+                    data-field="customHint"
+                    rows="3"
+                    placeholder="Un petit coup de pouce"
+                  >${escapeHtml(draft.customHint)}</textarea>
+                </div>
+              </div>
+            `
+          : `
+              <div class="grid">
+                <div class="field">
+                  <label>Piece</label>
+                  <select data-egg-id="${draft.id}" data-field="area">
+                    ${areas.map((area) => `
+                      <option value="${escapeHtml(area)}" ${area === draft.area ? 'selected' : ''}>
+                        ${escapeHtml(area)}
+                      </option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Cachette</label>
+                  <select data-egg-id="${draft.id}" data-field="hideSpotId">
+                    ${spots.map((spot) => `
+                      <option value="${spot.id}" ${spot.id === draft.hideSpotId ? 'selected' : ''}>
+                        ${escapeHtml(spot.objectLabel)}
+                      </option>
+                    `).join('')}
+                  </select>
+                </div>
+              </div>
+            `
+      }
+      <div class="peek"><strong>Enigme</strong><span>${escapeHtml(currentSpot?.riddle || '')}</span></div>
+      <div class="peek peek--hint"><strong>Indice</strong><span>${escapeHtml(currentSpot?.hint || '')}</span></div>
     </article>
   `;
 }
@@ -796,38 +1174,38 @@ function renderHostView() {
   if (!game) {
     return '';
   }
+
   return `
     <article class="card">
       <div class="card__header">
         <div>
           <h2 class="card__title">${escapeHtml(game.title)}</h2>
-          <p class="card__subtitle">
-            Partie ouverte par ${escapeHtml(game.hostName)}. Les autres appareils rejoignent la meme URL.
-          </p>
+          <p class="card__subtitle">Partie ouverte par ${escapeHtml(game.hostName)}.</p>
         </div>
         <div class="row">
+          <button class="button button--ghost" data-action="go-lobby" ${disabledAttr()}>
+            Parties
+          </button>
           <button class="button button--secondary" data-action="refresh" ${disabledAttr()}>
             Actualiser
           </button>
           <button class="button button--danger" data-action="close-game" ${disabledAttr()}>
-            Clore la partie
+            Fermer
           </button>
         </div>
       </div>
       <div class="summary">
         <div class="summary__item">${game.players.length} joueur(s)</div>
         <div class="summary__item">${game.eggs.length} oeuf(s)</div>
-        <div class="summary__item">Synchronisation ${escapeHtml(socketLabel())}</div>
+        <div class="summary__item">${escapeHtml(socketLabel())}</div>
       </div>
     </article>
     <section class="grid grid--two">
       <article class="card">
         <div class="card__header">
           <div>
-            <h2 class="card__title">Suivi des joueurs</h2>
-            <p class="card__subtitle">
-              Les progres se mettent a jour automatiquement.
-            </p>
+            <h2 class="card__title">Qui cherche ?</h2>
+            <p class="card__subtitle">Tout bouge en direct.</p>
           </div>
         </div>
         <div class="tile-list">
@@ -837,10 +1215,8 @@ function renderHostView() {
       <article class="card card--soft">
         <div class="card__header">
           <div>
-            <h2 class="card__title">Cachettes configurees</h2>
-            <p class="card__subtitle">
-              Chaque ligne rappelle pour quel joueur l'oeuf a ete cache.
-            </p>
+            <h2 class="card__title">Ou sont les oeufs ?</h2>
+            <p class="card__subtitle">Petit pense-bete.</p>
           </div>
         </div>
         <div class="tile-list">
@@ -860,7 +1236,7 @@ function renderHostPlayerTile(player) {
       <div style="flex: 1 1 auto;">
         <h3 class="tile__title">${escapeHtml(player.name)}</h3>
         <div class="tile__meta">
-          ${player.claimedBy ? `Reserve par ${escapeHtml(player.claimedBy)}.` : 'Pas encore reserve.'}
+          ${player.claimedBy ? `Pris par ${escapeHtml(player.claimedBy)}.` : 'Libre'}
         </div>
         <div class="progress" style="margin-top: 12px;">
           <span style="width: ${ratio}%;"></span>
@@ -879,9 +1255,9 @@ function renderHostEggTile(egg) {
     <article class="${tileClass}">
       <div>
         <h3 class="tile__title">${escapeHtml(spot?.area || 'Cachette')} · ${escapeHtml(spot?.objectLabel || 'Inconnue')}</h3>
-        <div class="tile__meta">Attribue a ${escapeHtml(player?.name || 'Inconnu')}</div>
+        <div class="tile__meta">Pour ${escapeHtml(player?.name || 'Inconnu')}</div>
       </div>
-      <div class="tile__aside">${egg.foundAt ? 'Trouve' : 'Cache'}</div>
+      <div class="tile__aside">${egg.foundAt ? 'Trouvé' : 'Cache'}</div>
     </article>
   `;
 }
@@ -891,18 +1267,22 @@ function renderPickerView() {
   if (!game) {
     return '';
   }
+
   return `
     <article class="card">
       <div class="card__header">
         <div>
           <h2 class="card__title">${escapeHtml(game.title)}</h2>
-          <p class="card__subtitle">
-            Choisis le nom prepare par le maitre du jeu pour commencer la chasse.
-          </p>
+          <p class="card__subtitle">Choisis ton nom.</p>
         </div>
-        <button class="button button--secondary" data-action="refresh" ${disabledAttr()}>
-          Actualiser
-        </button>
+        <div class="row">
+          <button class="button button--ghost" data-action="go-lobby" ${disabledAttr()}>
+            Parties
+          </button>
+          <button class="button button--secondary" data-action="refresh" ${disabledAttr()}>
+            Actualiser
+          </button>
+        </div>
       </div>
       <div class="tile-list">
         ${game.players.map(renderPickerTile).join('')}
@@ -920,8 +1300,8 @@ function renderPickerTile(player) {
       <div>
         <h3 class="tile__title">${escapeHtml(player.name)}</h3>
         <div class="tile__meta">
-          ${eggs.length} oeuf(s) a chercher, ${foundCount} deja trouves.
-          ${player.claimedBy ? `<br />Reserve par ${escapeHtml(player.claimedBy)}.` : ''}
+          ${eggs.length} oeuf(s) · ${foundCount} trouvé(s)
+          ${player.claimedBy ? `<br />Pris par ${escapeHtml(player.claimedBy)}` : ''}
         </div>
       </div>
       <div class="tile__aside">
@@ -944,25 +1324,28 @@ function renderHuntView() {
   if (!game || !player) {
     return '';
   }
+
   const eggs = eggsForPlayer(player.id);
   const foundCount = eggs.filter((egg) => egg.foundAt).length;
   const egg = currentEgg();
   const spot = egg ? hideSpotById(egg.hideSpotId) : null;
+
   return `
     <article class="card">
       <div class="card__header">
         <div>
           <h2 class="card__title">Tour de ${escapeHtml(player.name)}</h2>
-          <p class="card__subtitle">
-            Progression : ${foundCount} / ${eggs.length} oeuf(s) trouves.
-          </p>
+          <p class="card__subtitle">${foundCount} / ${eggs.length} trouvé(s)</p>
         </div>
         <div class="row">
+          <button class="button button--ghost" data-action="go-lobby" ${disabledAttr()}>
+            Parties
+          </button>
           <button class="button button--secondary" data-action="refresh" ${disabledAttr()}>
             Synchroniser
           </button>
           <button class="button button--ghost" data-action="leave-player" ${disabledAttr()}>
-            Changer de joueur
+            Changer
           </button>
         </div>
       </div>
@@ -973,48 +1356,44 @@ function renderHuntView() {
     ${
       egg && spot
         ? `
-          <article class="card card--soft">
-            <div class="card__header">
-              <div>
-                <h2 class="card__title">Enigme en cours</h2>
-                <p class="card__subtitle" data-role="hint-timer">${remainingHintLine()}</p>
+            <article class="card card--soft">
+              <div class="card__header">
+                <div>
+                  <h2 class="card__title">Enigme</h2>
+                  <p class="card__subtitle" data-role="hint-timer">${remainingHintLine()}</p>
+                </div>
               </div>
-            </div>
-            <div class="riddle">${escapeHtml(spot.riddle)}</div>
-            <div class="${isHintUnlocked() ? 'hint' : 'hint hint--locked'}" data-role="hint-box" style="margin-top: 16px;">
-              ${
-                isHintUnlocked()
-                  ? `<strong>Indice :</strong> ${escapeHtml(spot.hint)}`
-                  : "Tiens bon encore un peu : l'indice s'affichera automatiquement apres 5 minutes."
-              }
-            </div>
-            <div class="row" style="margin-top: 18px;">
-              <button class="button button--primary" data-action="mark-found" ${disabledAttr()}>
-                Trouve !
-              </button>
-            </div>
-          </article>
-        `
+              <div class="riddle">${escapeHtml(spot.riddle)}</div>
+              <div class="${isHintUnlocked() ? 'hint' : 'hint hint--locked'}" data-role="hint-box" style="margin-top: 16px;">
+                ${
+                  isHintUnlocked()
+                    ? `<strong>Indice :</strong> ${escapeHtml(spot.hint)}`
+                    : 'Encore un petit peu...'
+                }
+              </div>
+              <div class="row" style="margin-top: 18px;">
+                <button class="button button--primary" data-action="mark-found" ${disabledAttr()}>
+                  Trouve !
+                </button>
+              </div>
+            </article>
+          `
         : `
-          <article class="card card--soft">
-            <div class="card__header">
-              <div>
-                <h2 class="card__title">Tous les oeufs sont trouves</h2>
-                <p class="card__subtitle">
-                  Bravo, ce joueur a termine sa chasse.
-                </p>
+            <article class="card card--soft">
+              <div class="card__header">
+                <div>
+                  <h2 class="card__title">Tous trouvés !</h2>
+                  <p class="card__subtitle">Bravo !</p>
+                </div>
               </div>
-            </div>
-          </article>
-        `
+            </article>
+          `
     }
     <article class="card">
       <div class="card__header">
         <div>
-          <h2 class="card__title">Journal du joueur</h2>
-          <p class="card__subtitle">
-            Les cachettes ne sont revelees qu'une fois l'oeuf valide.
-          </p>
+          <h2 class="card__title">Petit journal</h2>
+          <p class="card__subtitle">Les trouvés apparaissent ici.</p>
         </div>
       </div>
       <div class="tile-list">
@@ -1033,9 +1412,9 @@ function renderHistoryTile(egg) {
         <h3 class="tile__title">
           ${done ? `${escapeHtml(spot?.area || '')} · ${escapeHtml(spot?.objectLabel || '')}` : 'Enigme a venir'}
         </h3>
-        <div class="tile__meta">${done ? 'Cachette revelee.' : 'Le secret reste entier.'}</div>
+        <div class="tile__meta">${done ? 'Cachette révélée.' : 'Le secret reste entier.'}</div>
       </div>
-      <div class="tile__aside">${done ? 'Trouve' : 'En attente'}</div>
+      <div class="tile__aside">${done ? 'Trouvé' : 'En attente'}</div>
     </article>
   `;
 }
@@ -1043,33 +1422,33 @@ function renderHistoryTile(egg) {
 function currentViewLabel() {
   switch (currentView()) {
     case 'host':
-      return 'Tableau maitre du jeu';
+      return 'Grand lapin';
     case 'picker':
-      return 'Choix du joueur';
+      return 'Choix';
     case 'hunt':
-      return 'Enigme en cours';
+      return 'Enigme';
+    case 'lobby':
+      return 'Parties';
     default:
-      return 'Creation de partie';
+      return 'Prepa';
   }
 }
 
 function socketLabel() {
   switch (state.socketStatus) {
     case 'open':
-      return 'WebSocket connecte';
+      return 'Direct';
     case 'connecting':
-      return 'Connexion en cours';
+      return 'Connexion';
     case 'closed':
-      return 'Reconnexion prochaine';
+      return 'Retour...';
     default:
-      return 'Attente';
+      return state.selectedGameId ? 'Calme' : 'Hall';
   }
 }
 
 function remainingHintLine() {
-  return isHintUnlocked()
-    ? "L'indice est maintenant disponible."
-    : `Indice dans ${remainingHintLabel()}.`;
+  return isHintUnlocked() ? 'Indice pret' : `Indice ${remainingHintLabel()}`;
 }
 
 function remainingHintLabel() {
@@ -1091,7 +1470,11 @@ function hideSpotsForArea(area) {
   return state.groupedHideSpots.get(area) || [];
 }
 
-function hideSpotById(hideSpotId) {
+function hideSpotById(hideSpotId, game = state.game) {
+  const customSpot = game?.customHideSpots?.find((spot) => spot.id === hideSpotId);
+  if (customSpot) {
+    return customSpot;
+  }
   return state.hideSpotMap.get(hideSpotId) || null;
 }
 
@@ -1103,6 +1486,39 @@ function loadDeviceLabel() {
   const generated = `Appareil ${100 + Math.floor(Math.random() * 900)}`;
   localStorage.setItem(STORAGE_KEYS.deviceLabel, generated);
   return generated;
+}
+
+function loadHostGameIds() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.hostGameIds);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHostGameIds() {
+  localStorage.setItem(STORAGE_KEYS.hostGameIds, JSON.stringify(state.hostGameIds));
+}
+
+function isHostGame(gameId) {
+  return state.hostGameIds.includes(gameId);
+}
+
+function addHostGameId(gameId) {
+  if (!state.hostGameIds.includes(gameId)) {
+    state.hostGameIds.push(gameId);
+    saveHostGameIds();
+  }
+}
+
+function removeHostGameId(gameId) {
+  state.hostGameIds = state.hostGameIds.filter((id) => id !== gameId);
+  saveHostGameIds();
 }
 
 function loadPlayerClaims() {
@@ -1118,6 +1534,10 @@ function loadPlayerClaims() {
   }
 }
 
+function savePlayerClaims() {
+  localStorage.setItem(STORAGE_KEYS.playerClaims, JSON.stringify(state.playerClaims));
+}
+
 function getClaimedPlayerId(gameId) {
   return state.playerClaims[gameId] || null;
 }
@@ -1131,7 +1551,15 @@ function setClaimedPlayerId(gameId, playerId) {
   } else {
     delete state.playerClaims[gameId];
   }
-  localStorage.setItem(STORAGE_KEYS.playerClaims, JSON.stringify(state.playerClaims));
+  savePlayerClaims();
+}
+
+function setSelectedGameId(gameId) {
+  state.selectedGameId = gameId;
+}
+
+function clearSelectedGame() {
+  state.selectedGameId = '';
 }
 
 function clearSessionForGame(gameId) {
@@ -1139,9 +1567,8 @@ function clearSessionForGame(gameId) {
     return;
   }
   setClaimedPlayerId(gameId, null);
-  if (state.hostGameId === gameId) {
-    state.hostGameId = '';
-    localStorage.removeItem(STORAGE_KEYS.hostGameId);
+  if (state.selectedGameId === gameId) {
+    clearSelectedGame();
   }
 }
 

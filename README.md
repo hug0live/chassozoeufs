@@ -10,7 +10,7 @@ Le dossier `server/` contient maintenant l'application complete prevue pour le r
 - creation d'une partie active
 - selection d'un joueur existant
 - liberation d'un joueur en cas de mauvaise selection
-- validation d'un oeuf trouve
+- validation d'un oeuf trouvé
 - synchronisation en temps reel via WebSocket
 - persistance JSON sur volume Docker
 - interface web servie directement a la racine `/`

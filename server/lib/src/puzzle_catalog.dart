@@ -1,29 +1,5 @@
 import 'models.dart';
 
-class HideSpotDefinition {
-  const HideSpotDefinition({
-    required this.id,
-    required this.area,
-    required this.objectLabel,
-    required this.riddle,
-    required this.hint,
-  });
-
-  final String id;
-  final String area;
-  final String objectLabel;
-  final String riddle;
-  final String hint;
-
-  JsonMap toJson() => {
-    'id': id,
-    'area': area,
-    'objectLabel': objectLabel,
-    'riddle': riddle,
-    'hint': hint,
-  };
-}
-
 const List<HideSpotDefinition> kHideSpots = [
   HideSpotDefinition(
     id: 'salon-canape',

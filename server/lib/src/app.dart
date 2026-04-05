@@ -85,12 +85,14 @@ class EggHuntServerApp {
       final body = await _readJson(request);
       final title = _readString(body['title']);
       final hostName = _readString(body['hostName']);
+      final adminCode = _readString(body['adminCode']);
       final players = _readStringList(body['players']);
       final eggDrafts = _readEggDrafts(body['eggs']);
 
       final game = await store.createGame(
         title: title,
         hostName: hostName,
+        adminCode: adminCode,
         playerNames: players,
         eggDrafts: eggDrafts,
       );
@@ -183,10 +185,13 @@ class EggHuntServerApp {
 
   Future<Response> _closeGame(Request request, String gameId) async {
     try {
-      final game = await store.closeGame(gameId);
+      final body = await _readJson(request);
+      final adminCode = _readString(body['adminCode']);
+      final game = await store.closeGame(gameId: gameId, adminCode: adminCode);
       return _jsonResponse({'game': game.toJson()});
     } on GameStoreException catch (error) {
-      return _errorResponse(404, error.message);
+      final status = error.message == 'Partie introuvable.' ? 404 : 403;
+      return _errorResponse(status, error.message);
     }
   }
 
@@ -302,12 +307,32 @@ class EggHuntServerApp {
       }
       final playerName = _readString(item['playerName']);
       final hideSpotId = _readString(item['hideSpotId']);
-      if (playerName.isEmpty || hideSpotId.isEmpty) {
+      final manualHideSpot = _readManualHideSpot(item['customHideSpot']);
+      if (playerName.isEmpty ||
+          (hideSpotId.isEmpty && manualHideSpot == null)) {
         continue;
       }
-      result.add(EggDraft(playerName: playerName, hideSpotId: hideSpotId));
+      result.add(
+        EggDraft(
+          playerName: playerName,
+          hideSpotId: hideSpotId.isEmpty ? null : hideSpotId,
+          manualHideSpot: manualHideSpot,
+        ),
+      );
     }
     return result;
+  }
+
+  ManualHideSpotDraft? _readManualHideSpot(Object? value) {
+    if (value is! Map<String, dynamic>) {
+      return null;
+    }
+    return ManualHideSpotDraft(
+      area: _readString(value['area']),
+      objectLabel: _readString(value['objectLabel']),
+      riddle: _readString(value['riddle']),
+      hint: _readString(value['hint']),
+    );
   }
 
   String _readString(Object? value) {

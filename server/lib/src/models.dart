@@ -11,6 +11,40 @@ DateTime? _asDateTime(Object? value) {
   return DateTime.tryParse(value);
 }
 
+class HideSpotDefinition {
+  const HideSpotDefinition({
+    required this.id,
+    required this.area,
+    required this.objectLabel,
+    required this.riddle,
+    required this.hint,
+  });
+
+  final String id;
+  final String area;
+  final String objectLabel;
+  final String riddle;
+  final String hint;
+
+  JsonMap toJson() => {
+    'id': id,
+    'area': area,
+    'objectLabel': objectLabel,
+    'riddle': riddle,
+    'hint': hint,
+  };
+
+  factory HideSpotDefinition.fromJson(JsonMap json) {
+    return HideSpotDefinition(
+      id: _asString(json['id']),
+      area: _asString(json['area']),
+      objectLabel: _asString(json['objectLabel']),
+      riddle: _asString(json['riddle']),
+      hint: _asString(json['hint']),
+    );
+  }
+}
+
 class PlayerEntry {
   const PlayerEntry({
     required this.id,
@@ -117,8 +151,10 @@ class GameSession {
     required this.id,
     required this.title,
     required this.hostName,
+    required this.adminCode,
     required this.players,
     required this.eggs,
+    required this.customHideSpots,
     required this.createdAt,
     required this.updatedAt,
     required this.status,
@@ -127,8 +163,10 @@ class GameSession {
   final String id;
   final String title;
   final String hostName;
+  final String adminCode;
   final List<PlayerEntry> players;
   final List<EggEntry> eggs;
+  final List<HideSpotDefinition> customHideSpots;
   final DateTime createdAt;
   final DateTime updatedAt;
   final String status;
@@ -154,8 +192,10 @@ class GameSession {
     String? id,
     String? title,
     String? hostName,
+    String? adminCode,
     List<PlayerEntry>? players,
     List<EggEntry>? eggs,
+    List<HideSpotDefinition>? customHideSpots,
     DateTime? createdAt,
     DateTime? updatedAt,
     String? status,
@@ -164,24 +204,30 @@ class GameSession {
       id: id ?? this.id,
       title: title ?? this.title,
       hostName: hostName ?? this.hostName,
+      adminCode: adminCode ?? this.adminCode,
       players: players ?? this.players,
       eggs: eggs ?? this.eggs,
+      customHideSpots: customHideSpots ?? this.customHideSpots,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       status: status ?? this.status,
     );
   }
 
-  JsonMap toJson() => {
-    'id': id,
-    'title': title,
-    'hostName': hostName,
-    'players': players.map((player) => player.toJson()).toList(),
-    'eggs': eggs.map((egg) => egg.toJson()).toList(),
-    'createdAt': createdAt.toIso8601String(),
-    'updatedAt': updatedAt.toIso8601String(),
-    'status': status,
-  };
+  JsonMap toJson({bool includeAdminCode = false}) {
+    return {
+      'id': id,
+      'title': title,
+      'hostName': hostName,
+      if (includeAdminCode) 'adminCode': adminCode,
+      'players': players.map((player) => player.toJson()).toList(),
+      'eggs': eggs.map((egg) => egg.toJson()).toList(),
+      'customHideSpots': customHideSpots.map((spot) => spot.toJson()).toList(),
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'status': status,
+    };
+  }
 
   factory GameSession.fromJson(JsonMap json) {
     final rawPlayers = json['players'] is List
@@ -190,10 +236,14 @@ class GameSession {
     final rawEggs = json['eggs'] is List
         ? json['eggs'] as List<Object?>
         : const [];
+    final rawHideSpots = json['customHideSpots'] is List
+        ? json['customHideSpots'] as List<Object?>
+        : const [];
     return GameSession(
       id: _asString(json['id']),
       title: _asString(json['title']),
       hostName: _asString(json['hostName']),
+      adminCode: _asString(json['adminCode']),
       players: [
         for (final raw in rawPlayers)
           if (raw is JsonMap) PlayerEntry.fromJson(raw),
@@ -202,6 +252,10 @@ class GameSession {
         for (final raw in rawEggs)
           if (raw is JsonMap) EggEntry.fromJson(raw),
       ],
+      customHideSpots: [
+        for (final raw in rawHideSpots)
+          if (raw is JsonMap) HideSpotDefinition.fromJson(raw),
+      ],
       createdAt: _asDateTime(json['createdAt']) ?? DateTime.now(),
       updatedAt: _asDateTime(json['updatedAt']) ?? DateTime.now(),
       status: _asString(json['status'], fallback: 'active'),
@@ -209,9 +263,38 @@ class GameSession {
   }
 }
 
+class ManualHideSpotDraft {
+  const ManualHideSpotDraft({
+    required this.area,
+    required this.objectLabel,
+    required this.riddle,
+    required this.hint,
+  });
+
+  final String area;
+  final String objectLabel;
+  final String riddle;
+  final String hint;
+
+  HideSpotDefinition toHideSpot(String id) {
+    return HideSpotDefinition(
+      id: id,
+      area: area.trim(),
+      objectLabel: objectLabel.trim(),
+      riddle: riddle.trim(),
+      hint: hint.trim(),
+    );
+  }
+}
+
 class EggDraft {
-  const EggDraft({required this.playerName, required this.hideSpotId});
+  const EggDraft({
+    required this.playerName,
+    this.hideSpotId,
+    this.manualHideSpot,
+  });
 
   final String playerName;
-  final String hideSpotId;
+  final String? hideSpotId;
+  final ManualHideSpotDraft? manualHideSpot;
 }

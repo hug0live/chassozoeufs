@@ -635,7 +635,7 @@ class _HostDashboardView extends StatelessWidget {
         _SectionCard(
           title: 'Suivi des joueurs',
           subtitle:
-              "Le maitre du jeu peut verifier en temps reel quels oeufs ont ete trouves.",
+              "Le maitre du jeu peut vérifier en temps réel quels oeufs ont été trouvés.",
           child: Column(
             children: [
               for (final player in game.players)
@@ -792,7 +792,7 @@ class _PlayerHuntViewState extends State<_PlayerHuntView> {
           title: 'Tour de ${player.name}',
           subtitle: totalCount == 0
               ? "Aucun oeuf n'a encore ete attribue a ce joueur."
-              : 'Progression: $foundCount / $totalCount oeuf(s) trouves.',
+              : 'Progression: $foundCount / $totalCount oeuf(s) trouvés.',
           action: Wrap(
             spacing: 8,
             children: [
@@ -825,7 +825,7 @@ class _PlayerHuntViewState extends State<_PlayerHuntView> {
                     const SizedBox(height: 10),
                     Text(
                       currentEgg == null
-                          ? 'Mission accomplie: tous les oeufs de ${player.name} ont ete trouves.'
+                          ? 'Mission accomplie: tous les oeufs de ${player.name} ont ete trouvés.'
                           : 'Oeuf ${foundCount + 1} sur $totalCount',
                     ),
                   ],
@@ -886,14 +886,14 @@ class _PlayerHuntViewState extends State<_PlayerHuntView> {
                 FilledButton.icon(
                   onPressed: widget.controller.markCurrentEggFound,
                   icon: const Icon(Icons.check_circle_outline),
-                  label: const Text('Trouve !'),
+                  label: const Text('Trouvé !'),
                 ),
               ],
             ),
           )
         else if (totalCount > 0)
           const _SectionCard(
-            title: 'Tous les oeufs sont trouves',
+            title: 'Tous les oeufs sont trouvés',
             subtitle:
                 "Bravo. Le joueur a termine sa chasse, il peut maintenant aller fanfaronner.",
             child: Text(
@@ -905,7 +905,7 @@ class _PlayerHuntViewState extends State<_PlayerHuntView> {
           _SectionCard(
             title: 'Journal du joueur',
             subtitle:
-                "Les oeufs trouves revelent leur cachette. Les suivants restent secrets tant qu'ils ne sont pas valides.",
+                "Les oeufs trouvés revelent leur cachette. Les suivants restent secrets tant qu'ils ne sont pas valides.",
             child: Column(
               children: [
                 for (final egg in eggs)
@@ -1279,7 +1279,7 @@ class _HostEggTile extends StatelessWidget {
               ],
             ),
           ),
-          Text(egg.isFound ? 'Trouve' : 'Cache'),
+          Text(egg.isFound ? 'Trouvé' : 'Caché'),
         ],
       ),
     );
@@ -1359,7 +1359,7 @@ class _PlayerEggHistoryTile extends StatelessWidget {
                   : 'Enigme a venir',
             ),
           ),
-          Text(egg.isFound ? 'Trouve' : 'En attente'),
+          Text(egg.isFound ? 'Trouvé' : 'En attente'),
         ],
       ),
     );
