@@ -141,7 +141,7 @@ class GameStore {
       orderByPlayer[playerId] = order;
       eggs.add(
         EggEntry(
-          id: 'egg-${index + 1}-${hideSpotId}',
+          id: 'egg-${index + 1}-$hideSpotId',
           playerId: playerId,
           hideSpotId: hideSpotId,
           order: order,

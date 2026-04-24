@@ -9,10 +9,29 @@ services:
       APP_PORT: 8181
       DATA_DIR: /data
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-*}
-    ports:
-      - "${HOST_PORT:-8181}:8181"
+    expose:
+      - "8181"
     volumes:
       - egg_hunt_data:/data
 
+  egg-hunt-proxy:
+    image: caddy:2
+    container_name: chassozoeufs-proxy
+    restart: unless-stopped
+    depends_on:
+      - egg-hunt-server
+    environment:
+      PUBLIC_HOSTS: ${PUBLIC_HOSTS:-localhost,127.0.0.1,raspberrypi.local}
+    command: ["/bin/sh", "/usr/local/bin/start-caddy.sh"]
+    ports:
+      - "${HTTP_PORT:-8180}:80"
+      - "${HTTPS_PORT:-8181}:443"
+    volumes:
+      - ./infra/start-caddy.sh:/usr/local/bin/start-caddy.sh:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   egg_hunt_data:
+  caddy_data:
+  caddy_config:
